@@ -8,6 +8,7 @@ require 'construct'
 require 'rack/mount'
 require 'servolux'
 require 'rack/fake'
+require 'greenletters'
 require 'open4'
 
 World(Construct::Helpers)
@@ -29,7 +30,6 @@ module Helpers
 end
 
 World(Helpers)
-World(Open4)
 
 Before do
   @construct = create_construct

@@ -53,58 +53,22 @@ module TestMain
 end
 
 When /^I run "([^\"]*)"$/ do |command|
-  @stdin  = StringIO.new
-  @stdout = StringIO.new
-  @stderr = StringIO.new
-  @command = command.sub(/^tick/, @executable)
-  @tracker.start do
-    @process = background(
-      @command, 
-      :cwd     => @construct.to_s,
-      :stdin   => @stdin,
-      :stdout  => @stdout,
-      :stderr  => @stderr,
-      :timeout => 4.0)
-  end
-
-  # @argv   = Shellwords.shellwords(command.sub(/^tick\s*/,''))
-  # @stdin  = StringIO.new
-  # @stdout = StringIO.new
-  # @stderr = StringIO.new
-  # @ui     = stub("UI")
-  # main_code = catch(:main) do
-  #   TestMain.class_eval(
-  #     File.read(
-  #       File.expand_path('../../bin/tick', File.dirname(__FILE__))),
-  #     File.expand_path('../../bin/tick', File.dirname(__FILE__)),1)
-  # end
-  # @main = Main.test(
-  #   :argv   => @argv, 
-  #   :stdin  => @stdin, 
-  #   :stderr => @stderr, 
-  #   :stdout => @stdout, 
-  #   :env    => (@env || {}), &main_code)
+  @process = Greenletters::Process.new(command)
+  @process.start!
 end
 
 Then /^I should see "([^\"]*)"$/ do |pattern|
-  output = read_until(@stdout, pattern)
-  output.should match(pattern)
+  @process.wait_for(:output, pattern)
 end
 
 When /^I enter "([^\"]*)"$/ do |response|
-  @stdout.rewind
-  @stdout.string = ""
-  @stdin.rewind
-  @stdin.string = response + "\n"
+  @process.puts response
 end
 
 After do
   begin
     if @process
-      @process.join
-    end
-    if @stderr
-      @stderr.string.should == ""
+      @process.wait_for(:exit)
     end
   ensure
     if @tracker
