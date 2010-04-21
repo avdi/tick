@@ -197,14 +197,11 @@ module Greenletters
       @logger.debug "read #{result.size} bytes"
       handle_triggers(:output)
       flush_output_buffer!
-    rescue Errno::EIO => error
-      @logger.debug "Errno::EIO caught"
-      wait_for_child_to_die
     end
 
     def wait_for_child_to_die
       # Soon we should get a PTY::ChildExited
-      while alive?
+      while running?
         @logger.debug "waiting for child #{@pid} to die"
         sleep 0.1
       end
@@ -268,10 +265,19 @@ module Greenletters
     end
 
     def handle_child_exit
-      yield
+      handle_eio do
+        yield
+      end
     rescue PTY::ChildExited => error
       @logger.debug "caught PTY::ChildExited"
       handle_exit(error.status)
+    end
+
+    def handle_eio
+      yield
+    rescue Errno::EIO => error
+      @logger.debug "Errno::EIO caught"
+      wait_for_child_to_die
     end
   end
 end
