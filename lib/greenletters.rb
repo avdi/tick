@@ -24,6 +24,12 @@ require 'rbconfig'
 # we guarantee that the child will never exit before we have a chance to look at
 # the output.
 module Greenletters
+  LogicError   = Class.new(::Exception)
+  SystemError  = Class.new(RuntimeError)
+  ClientError  = Class.new(RuntimeError)
+  StateError   = Class.new(ClientError)
+  Process
+
   def Trigger(event, *args, &block)
     klass = trigger_class_for_event(event)
     klass.new(*args, &block)
@@ -184,7 +190,7 @@ module Greenletters
     end
 
     def start!
-      raise "Already started!" unless not_started?
+      raise StateError, "Already started!" unless not_started?
       @logger.debug "installing end marker handler for #{END_MARKER}"
       prepend_trigger(:output, /#{END_MARKER}/, :exclusive => false, :time_to_live => 1) do |process, data|
         handle_end_marker
@@ -246,7 +252,7 @@ module Greenletters
     end
 
     def process_events
-      raise "Process not started!" if not_started?
+      raise StateError, "Process not started!" if not_started?
       handle_child_exit do
         while blocked?
           @logger.debug "select()"
@@ -313,7 +319,7 @@ module Greenletters
     def process_timeout
       @logger.debug "timeout"
       unless handle_triggers(:timeout)
-        raise "Timed out waiting on #{blocker}"
+        raise SystemError, "Timed out waiting on #{blocker}"
       end
     end
 
@@ -324,9 +330,9 @@ module Greenletters
       @status = status
       unless handle_triggers(:exit)
         if status == 0
-          raise "Process exited waiting on #{blocker}"
+          raise SystemError, "Process exited waiting on #{blocker}"
         else
-          raise "Process exited abnormally waiting on #{blocker}. Output: \n\n#{output_buffer.string}"
+          raise SystemError, "Process exited abnormally waiting on #{blocker}. Output: \n\n#{output_buffer.string}"
         end
       end
     end
