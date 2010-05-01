@@ -2,6 +2,7 @@ require 'logger'
 require 'pty'
 require 'forwardable'
 require 'stringio'
+require 'shellwords'
 
 module Greenletters
   def Trigger(event, *args, &block)
@@ -19,7 +20,7 @@ module Greenletters
     attr_accessor :logger
 
     alias_method :exclusive?, :exclusive
-    
+
     def initialize(options={}, &block)
       @block     = block || lambda{}
       @exclusive = options.fetch(:exclusive) { true }
@@ -43,9 +44,10 @@ module Greenletters
     end
 
     def call(process)
-      @logger.debug "matching #{@pattern.inspect} against #{process.output_buffer.string.inspect}"
-      if (md = process.output_buffer.string.match(@pattern))
-        matching_output = process.output_buffer.string.dup
+      data = process.output_buffer.string
+      @logger.debug "matching #{@pattern.inspect} against #{data.inspect}"
+      if (md = data.match(@pattern))
+        @logger.debug "matched #{@pattern.inspect}"
         @block.call(process, md)
         true
       else
@@ -55,15 +57,36 @@ module Greenletters
   end
 
   class TimeoutTrigger < Trigger
+    def to_s
+      "timeout"
+    end
   end
 
   class ExitTrigger < Trigger
+    attr_reader :pattern
+
+    def initialize(pattern=(0...256), options={}, &block)
+      super(options, &block)
+      @pattern = pattern
+    end
+
     def call(process)
-      @block.call(process, process.status)
+      if pattern === process.status.exitstatus
+        @block.call(process, process.status)
+        true
+      else
+        false
+      end
+    end
+
+    def to_s
+      "exit with status #{pattern}"
     end
   end
 
   class Process
+    END_MARKER = '__GREENLETTERS_PROCESS_ENDED__'
+
     extend Forwardable
     include ::Greenletters
 
@@ -77,8 +100,9 @@ module Greenletters
     def_delegators :output_buffer, :read, :readpartial, :read_nonblock, :gets,
                                    :getline
 
-    def initialize(command, options={})
-      @command       = command
+    def initialize(*args)
+      options        = args.pop if args.last.is_a?(Hash)
+      @command       = args
       @triggers      = []
       @blocker       = nil
       @input_buffer  = StringIO.new
@@ -89,11 +113,11 @@ module Greenletters
         l
       }
       @state         = :not_started
+      @shell         = options.fetch(:shell) { ENV.fetch('SHELL') { '/bin/sh' }}
     end
 
     def on(event, *args, &block)
-      @logger.debug "adding #{event} trigger"
-      add_trigger(event, *args, &block)
+      t = add_trigger(event, *args, &block)
     end
 
     def wait_for(event, *args, &block)
@@ -109,8 +133,18 @@ module Greenletters
       t = Trigger(event, *args, &block)
       t.logger = @logger
       triggers << t
+      @logger.debug "added trigger on #{t}"
       t
     end
+
+    def prepend_trigger(event, *args, &block)
+      t = Trigger(event, *args, &block)
+      t.logger = @logger
+      triggers.unshift(t)
+      @logger.debug "prepended trigger on #{t}"
+      t
+    end
+
 
     def add_blocking_trigger(event, *args, &block)
       t = add_trigger(event, *args, &block)
@@ -122,8 +156,14 @@ module Greenletters
 
     def start!
       raise "Already started!" unless not_started?
+      @logger.debug "installing end marker handler for #{END_MARKER}"
+      prepend_trigger(:output, /#{END_MARKER}/, :exclusive => false, :time_to_live => 1) do |process, data|
+        handle_end_marker
+      end
       handle_child_exit do
-        @output, @input, @pid = PTY.spawn(command)
+        cmd = wrapped_command
+        @logger.debug "executing #{cmd.join(' ')}"
+        @output, @input, @pid = PTY.spawn(*cmd)
         @state = :running
         @logger.debug "spawned pid #{@pid}"
       end
@@ -157,9 +197,22 @@ module Greenletters
       @state == :exited
     end
 
+    # Have we seen the end marker yet?
+    def ended?
+      @state == :ended
+    end
+
     private
 
     attr_reader :triggers
+
+    def wrapped_command
+      [@shell, '-c', '--', Shellwords.join(command) + command_epilogue]
+    end
+
+    def command_epilogue
+      "; echo #{END_MARKER}; read ack"
+    end
 
     def process_events
       raise "Process not started!" if not_started?
@@ -193,15 +246,29 @@ module Greenletters
 
     def process_output(handle)
       @logger.debug "output ready #{handle.inspect}"
-      result = handle.readpartial(1024,output_buffer.string) 
+      result = handle.readpartial(1024,output_buffer.string)
       @logger.debug "read #{result.size} bytes"
       handle_triggers(:output)
+      flush_triggers(OutputTrigger) if ended?
       flush_output_buffer!
+    end
+
+    def collect_remaining_output
+      if @output.nil?
+        @logger.debug "unable to collect output for missing output handle"
+        return
+      end
+      @logger.debug "collecting remaining input"
+      while data = @output.read_nonblock(1024, output_buffer.string)
+        @logger.debug "read #{data.size} bytes"
+      end
+    rescue EOFError, Errno::EIO => error
+      @logger.debug error.message
     end
 
     def wait_for_child_to_die
       # Soon we should get a PTY::ChildExited
-      while running?
+      while running? || ended?
         @logger.debug "waiting for child #{@pid} to die"
         sleep 0.1
       end
@@ -224,7 +291,13 @@ module Greenletters
       @logger.debug "handling exit of process #{@pid}"
       @state  = :exited
       @status = status
-      handle_triggers(:exit)
+      unless handle_triggers(:exit)
+        if status == 0
+          raise "Process exited waiting on #{blocker}"
+        else
+          raise "Process exited abnormally waiting on #{blocker}. Output: \n\n#{output_buffer.string}"
+        end
+      end
     end
 
     def status_from_waitpid
@@ -236,6 +309,7 @@ module Greenletters
       klass = trigger_class_for_event(event)
       matches = 0
       triggers.grep(klass).each do |t|
+        @logger.debug "checking #{event} against #{t}"
         if t.call(self)         # match
           matches += 1
           @logger.debug "match trigger #{t}"
@@ -259,6 +333,16 @@ module Greenletters
       matches > 0
     end
 
+    def handle_end_marker
+      return false if ended?
+      @logger.debug "end marker found"
+      output_buffer.string.gsub!(/#{END_MARKER}\s*/, '')
+      @state = :ended
+      @logger.debug "end marker expunged from output buffer"
+      @logger.debug "acknowledging end marker"
+      self.puts
+    end
+
     def unblock!
       @logger.debug "unblocked"
       @blocker = nil
@@ -270,6 +354,7 @@ module Greenletters
       end
     rescue PTY::ChildExited => error
       @logger.debug "caught PTY::ChildExited"
+      collect_remaining_output
       handle_exit(error.status)
     end
 
@@ -278,6 +363,11 @@ module Greenletters
     rescue Errno::EIO => error
       @logger.debug "Errno::EIO caught"
       wait_for_child_to_die
+    end
+
+    def flush_triggers(kind)
+      @logger.debug "flushing triggers matching #{kind}"
+      triggers.delete_if{|t| kind === t}
     end
   end
 end
