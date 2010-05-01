@@ -84,7 +84,7 @@ module Greenletters
   class ExitTrigger < Trigger
     attr_reader :pattern
 
-    def initialize(pattern=(0...256), options={}, &block)
+    def initialize(pattern=0, options={}, &block)
       super(options, &block)
       @pattern = pattern
     end
@@ -105,6 +105,12 @@ module Greenletters
 
   class Process
     END_MARKER = '__GREENLETTERS_PROCESS_ENDED__'
+
+    # Shamelessly stolen from Rake
+    RUBY_EXT =
+      ((Config::CONFIG['ruby_install_name'] =~ /\.(com|cmd|exe|bat|rb|sh)$/) ?
+      "" :
+      Config::CONFIG['EXEEXT'])
     RUBY       = File.join(
       Config::CONFIG['bindir'],
       Config::CONFIG['ruby_install_name'] + RUBY_EXT).
@@ -230,11 +236,13 @@ module Greenletters
     attr_reader :triggers
 
     def wrapped_command
-      [@shell, '-c', '--', Shellwords.join(command) + command_epilogue]
-    end
-
-    def command_epilogue
-      "; status=$?; echo #{END_MARKER}; read ack; exit $status"
+      command_parts = command.map{|a| "'#{a}'"}.join(', ')
+      [RUBY,
+        '-e', "system(#{command_parts})",
+        '-e', "puts(#{END_MARKER.inspect})",
+        '-e', "gets",
+        '-e', "exit $?.exitstatus"
+      ]
     end
 
     def process_events
