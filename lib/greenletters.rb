@@ -48,7 +48,7 @@ module Greenletters
 
     def initialize(options={}, &block)
       @block     = block || lambda{}
-      @exclusive = options.fetch(:exclusive) { true }
+      @exclusive = options.fetch(:exclusive) { false }
       @logger    = ::Logger.new($stdout)
     end
 
@@ -205,6 +205,7 @@ module Greenletters
     end
 
     def flush_output_buffer!
+      @logger.debug "flushing output buffer"
       @output_buffer.string = ""
       @output_buffer.rewind
     end
@@ -286,8 +287,8 @@ module Greenletters
       result = handle.readpartial(1024,output_buffer.string)
       @logger.debug "read #{result.size} bytes"
       handle_triggers(:output)
-      flush_triggers(OutputTrigger) if ended?
-      flush_output_buffer!
+      flush_triggers!(OutputTrigger) if ended?
+      flush_output_buffer! unless ended?
     end
 
     def collect_remaining_output
@@ -295,7 +296,7 @@ module Greenletters
         @logger.debug "unable to collect output for missing output handle"
         return
       end
-      @logger.debug "collecting remaining input"
+      @logger.debug "collecting remaining output"
       while data = @output.read_nonblock(1024, output_buffer.string)
         @logger.debug "read #{data.size} bytes"
       end
@@ -402,7 +403,7 @@ module Greenletters
       wait_for_child_to_die
     end
 
-    def flush_triggers(kind)
+    def flush_triggers!(kind)
       @logger.debug "flushing triggers matching #{kind}"
       triggers.delete_if{|t| kind === t}
     end
