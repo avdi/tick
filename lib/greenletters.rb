@@ -3,7 +3,26 @@ require 'pty'
 require 'forwardable'
 require 'stringio'
 require 'shellwords'
+require 'rbconfig'
 
+# A better expect.rb
+#
+# Implementation note: because of the way PTY is implemented in Ruby, it is
+# possible when executing a quick non-interactive command for PTY::ChildExited
+# to be raised before ever getting input/output handles to the child
+# process. Without an output handle, it's not possible to read any output the
+# process produced. This is obviously undesirable, especially since when a
+# command is unexpectedly quick and noninteractive it's usually because there
+# was an error and you really want to be able to see what the problem was.
+#
+# Greenletters' solution to this problem is to wrap every command in a short
+# script. The script executes the passed command and on termination, outputs an
+# easily recognizable marker string. Then it waits for acknowledgment (a
+# newline) before exiting. When Greenletters sees the marker string in the
+# output, it automatically performs the acknowledgement and allows the child
+# process to finish. By forcing the child process to wait for acknowledgement,
+# we guarantee that the child will never exit before we have a chance to look at
+# the output.
 module Greenletters
   def Trigger(event, *args, &block)
     klass = trigger_class_for_event(event)
@@ -86,6 +105,10 @@ module Greenletters
 
   class Process
     END_MARKER = '__GREENLETTERS_PROCESS_ENDED__'
+    RUBY       = File.join(
+      Config::CONFIG['bindir'],
+      Config::CONFIG['ruby_install_name'] + RUBY_EXT).
+      sub(/.*\s.*/m, '"\&"')
 
     extend Forwardable
     include ::Greenletters
@@ -113,7 +136,7 @@ module Greenletters
         l
       }
       @state         = :not_started
-      @shell         = options.fetch(:shell) { ENV.fetch('SHELL') { '/bin/sh' }}
+      @shell         = options.fetch(:shell) { '/bin/sh' }
     end
 
     def on(event, *args, &block)
@@ -211,7 +234,7 @@ module Greenletters
     end
 
     def command_epilogue
-      "; echo #{END_MARKER}; read ack"
+      "; status=$?; echo #{END_MARKER}; read ack; exit $status"
     end
 
     def process_events
