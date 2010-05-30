@@ -57,10 +57,26 @@ Main do
     request = Net::HTTP::Get.new('/services/v3/projects')
     request['X-TrackerToken'] = token
     response = client.request(request)
+    logger.debug "Projects XML:"
+    logger.debug response.body
+    doc = Nokogiri::XML(response.body)
+    doc.xpath('//project')
   }
 
   option 'config_path' do
     default{ project_config_path }
+  end
+
+  option 'debug', 'd' do
+    cast :boolean
+    default false
+    attr
+  end
+
+  option 'verbose', 'v' do
+    cast :boolean
+    default false
+    attr
   end
 
   environment('TICK_TRACKER_BASE_URI') {
@@ -69,11 +85,21 @@ Main do
     attr
   }
 
+  def before_run
+    if debug
+      logger.level = ::Logger::DEBUG
+    elsif verbose
+      logger.level = ::Logger::INFO
+    else
+      logger.level = ::Logger::WARN
+    end
+  end
+
   mode 'project' do
     mode 'list' do
       def run
         projects.each do |p|
-          puts p.name
+          puts p.xpath('name').text
         end
       end
     end
@@ -81,12 +107,14 @@ Main do
 
   mode 'info' do
     def run
-      say "Token:  #{token}"
+      show_info
     end
   end
 
   mode 'login' do
-    info
+    def run
+      show_info
+    end
   end
 
   def run
@@ -111,8 +139,7 @@ Main do
         store_token!(token)
         token
       else
-        say "Unable to retrieve API token: #{response.message}"
-        exit_failure
+        raise "Unable to retrieve API token: #{response.body}"
       end
     end
   end
@@ -124,8 +151,12 @@ Main do
 
   def store_token!(token)
     store.transaction(false) do |store|
-      store['token'] = token
+      store['tracker']['token'] = token
       say "Token stored"
     end
+  end
+
+  def show_info
+    say "Token:  #{token}"
   end
 end

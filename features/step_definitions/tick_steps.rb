@@ -49,9 +49,10 @@ EOF
 
   def tracker_project_list_xml(*names)
     names = names.empty? ? project_names : names
-    projects_xml = project_names.map_with_index{|n, i|
-      tracker_project_xml(n,i)
-    }.join("\n")
+    projects_xml = ""
+    project_names.each_with_index do |n, i|
+      projects_xml << tracker_project_xml(n,i) << "\n"
+    end
 
     xml = <<"EOF"
   <?xml version="1.0" encoding="UTF-8"?>
@@ -119,23 +120,28 @@ module TestMain
 end
 
 Given /^I have logged in to a Git\/Tracker project$/ do
-  Given 'my Tracker token is TOKEN'
+  Given 'I am in a Git project'
+    And 'my Tracker token is TOKEN123'
+    And 'the Tracker server is available'
    When 'I run "tick login"'
    Then 'I should see "Tracker login:"'
    When 'I enter "bob"'
    Then 'I should see "Password:"'
    When 'I enter "xyzzy"'
+   Then 'I should see "TOKEN123"'
+   And 'the command should exit successfully'
 end
 
 Given /^I am a member of the following projects$/ do |projects|
   projects.hashes.each do |project|
-    project_names << project[:name]
+    project_names << project[:title]
   end
 
+  list_xml = tracker_project_list_xml
   @tracker.define do
     get '/services/v3/projects' do
       content_type 'application/xml'
-      tracker_project_list_xml
+      list_xml
     end
   end
 end
@@ -146,6 +152,7 @@ end
 
 When /^I run "([^\"]*)"$/ do |command|
   command = command.sub(/^tick/, File.join(@bin_dir, 'tick'))
+  command << " -d"
   log_path     = (@tmpdir + 'commands.log').to_s
   logger       = ::Logger.new(log_path)
   logger.level = ::Logger::DEBUG
@@ -155,10 +162,14 @@ When /^I run "([^\"]*)"$/ do |command|
     :logger => logger,
     :env    => {'TICK_TRACKER_BASE_URI' =>
       "http://#{@tracker.host}:#{@tracker.port}"},
-    :transcript => transcript)
-  @process.on(:unsatisfied) do |process, reason|
+    :transcript => transcript,
+    :cwd        => @construct.to_s)
+  @process.on(:unsatisfied) do |process, reason, blocker|
     raise "#{reason} while waiting for #{blocker}\nCommand logged to #{log_path}" \
-          "\nTranscript:\n\n#{transcript}"
+          "\nTranscript:\n\n#{transcript}\n\n" \
+          "Server output:\n\n#{@tracker.output}\n\n" \
+          "Configuration:\n\n#{(@construct + '.tick').read}\n\n" \
+          "---------------------------------------------------------------------"
   end
   @process.start!
 end
@@ -169,6 +180,10 @@ end
 
 When /^I enter "([^\"]*)"$/ do |response|
   @process.puts response
+end
+
+Then /^the command should exit successfully$/ do
+  @process.wait_for(:exit, 0)
 end
 
 After do

@@ -123,7 +123,7 @@ module Greenletters
     end
 
     def call(process)
-      @block.call(process, process.interruption)
+      @block.call(process, process.interruption, process.blocker)
       true
     end
   end
@@ -149,6 +149,7 @@ module Greenletters
     attr_reader   :input_buffer # Input waiting to be written to process
     attr_reader   :output_buffer # Output ready to be read from process
     attr_reader   :status        # :not_started -> :running -> :ended -> :exited
+    attr_reader   :cwd          # Working directory for the command
 
     def_delegators :input_buffer, :puts, :write, :print, :printf, :<<
     def_delegators :output_buffer, :read, :readpartial, :read_nonblock, :gets,
@@ -163,6 +164,7 @@ module Greenletters
       @input_buffer  = StringIO.new
       @output_buffer = StringIO.new
       @env           = options.fetch(:env) {{}}
+      @cwd           = options.fetch(:cwd) {Dir.pwd}
       @logger   = options.fetch(:logger) {
         l = ::Logger.new($stdout)
         l.level = ::Logger::WARN
@@ -184,6 +186,7 @@ module Greenletters
     end
 
     def wait_for(event, *args, &block)
+      raise "Already waiting for #{blocker}" if blocker
       t = add_blocking_trigger(event, *args, &block)
       process_events
     rescue
@@ -275,6 +278,7 @@ module Greenletters
 
     def wrapped_command
       [RUBY,
+        '-C', cwd,
         '-e', "system(*#{command.inspect})",
         '-e', "puts(#{END_MARKER.inspect})",
         '-e', "gets",
@@ -308,6 +312,7 @@ module Greenletters
     def process_input(handle)
       @logger.debug "input ready #{handle.inspect}"
       handle.write(input_buffer.string)
+      @logger.debug format_output_for_log(input_buffer.string)
       @logger.debug "wrote #{input_buffer.string.size} bytes"
       input_buffer.string = ""
     end
@@ -316,6 +321,7 @@ module Greenletters
       @logger.debug "output ready #{handle.inspect}"
       result = handle.readpartial(1024,output_buffer.string)
       @transcript << result
+      @logger.debug format_input_for_log(output_buffer.string)
       @logger.debug "read #{result.size} bytes"
       handle_triggers(:output)
       flush_triggers!(OutputTrigger) if ended?
@@ -350,9 +356,7 @@ module Greenletters
 
     def process_timeout
       @logger.debug "timeout"
-      unless handle_triggers(:timeout)
-        raise TimeoutError, "Timed out waiting on #{blocker}"
-      end
+      handle_triggers(:timeout)
       process_interruption(:timeout)
     end
 
@@ -361,14 +365,12 @@ module Greenletters
       @logger.debug "handling exit of process #{@pid}"
       @state  = :exited
       @status = status
-      unless handle_triggers(:exit)
-        if status == 0
-          raise SystemError, "Process exited waiting on #{blocker}. Output: \n\n#{output_buffer.string}"
-        else
-          raise SystemError, "Process exited abnormally waiting on #{blocker}. Output: \n\n#{output_buffer.string}"
-        end
+      handle_triggers(:exit)
+      if status == 0
+        process_interruption(:exit)
+      else
+        process_interruption(:abnormal_exit)
       end
-      process_interruption(:exit)
     end
 
     def status_from_waitpid
@@ -458,8 +460,19 @@ module Greenletters
     def process_interruption(reason)
       if blocked?
         self.interruption = reason
+        unless handle_triggers(:unsatisfied)
+          raise SystemError, "Interrupted (#{reason}) while waiting for #{blocker}"
+        end
         unblock!
       end
+    end
+
+    def format_output_for_log(text)
+      "\n" + text.split("\n").map{|l| ">> #{l}"}.join("\n")
+    end
+
+    def format_input_for_log(text)
+      "\n" + text.split("\n").map{|l| "<< #{l}"}.join("\n")
     end
   end
 end

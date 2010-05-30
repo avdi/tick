@@ -4,12 +4,11 @@ Feature: list projects
   So that I can pick one to work on
 
   Scenario: show my projects
-    Given I have logged in to a Git/Tracker project
-      And I am a member of the following projects
+    Given I am a member of the following projects
       | title     |
       | Project A |
       | Project C |
-     And the Tracker server is available
+     And I have logged in to a Git/Tracker project
     When I run "tick project list"
     Then I should see "Project A"
      And I should see "Project C"
