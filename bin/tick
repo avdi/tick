@@ -8,17 +8,18 @@ require 'git'
 require 'nokogiri'
 require 'yaml/store'
 require 'net/https'
+require 'addressable/uri'
 
 Main do
 
-  fattr(:ui) { 
+  fattr(:ui) {
     hl = HighLine.new
     hl
   }
   fattr(:project_root) { Pathname(Dir.pwd) }
   fattr(:project_config_path) { project_root + '.tick' }
   fattr(:store) {
-    store = YAML::Store.new(project_config_path.to_s) 
+    store = YAML::Store.new(project_config_path.to_s)
     store.transaction(false) do |store|
       store['tracker'] ||= {}
     end
@@ -38,31 +39,42 @@ Main do
       retrieve_token
     end
   }
+  fattr(:tracker_base_uri) {
+    params['TICK_TRACKER_BASE_URI'].value
+  }
   fattr(:client) {
-    client = Net::HTTP.new('www.pivotaltracker.com', 443)
-    client.use_ssl     = true
+    info "Opening connection to #{tracker_base_uri}"
+    client = Net::HTTP.new(
+      tracker_base_uri.host,
+      tracker_base_uri.inferred_port)
+    client.use_ssl     = true if tracker_base_uri.scheme == 'https'
     # client.cert        = OpenSSL::X509::Certificate.new(DATA)
     # client.key         = OpenSSL::PKey::RSA.new(DATA)
     client.verify_mode = OpenSSL::SSL::VERIFY_NONE # TODO fix this!
     client
   }
-  fattr :token_url => 'https://www.pivotaltracker.com/services/v3/tokens/active'
   fattr(:projects) {
     request = Net::HTTP::Get.new('/services/v3/projects')
     request['X-TrackerToken'] = token
     response = client.request(request)
-    
   }
-  fattr(:pivotal_base_uri) { 'http://www.pivotaltracker.com' }
 
   option 'config_path' do
     default{ project_config_path }
   end
 
-  mode 'list-projects' do
-    def run
-      projects.each do |p|
-        puts p.name
+  environment('TICK_TRACKER_BASE_URI') {
+    default 'https://www.pivotaltracker.com'
+    cast lambda {|uri| Addressable::URI.parse(uri)}
+    attr
+  }
+
+  mode 'project' do
+    mode 'list' do
+      def run
+        projects.each do |p|
+          puts p.name
+        end
       end
     end
   end
@@ -71,6 +83,10 @@ Main do
     def run
       say "Token:  #{token}"
     end
+  end
+
+  mode 'login' do
+    info
   end
 
   def run

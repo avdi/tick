@@ -9,6 +9,7 @@ require 'servolux'
 require 'rack/fake'
 require 'greenletters'
 require 'open4'
+require 'pathname'
 
 World(Construct::Helpers)
 
@@ -19,6 +20,8 @@ World(Helpers)
 
 Before do
   @construct = create_construct
+  @tmpdir    = (Pathname(__FILE__).dirname + '..' + '..' + 'tmp').expand_path
+  @tmpdir.mkpath
 end
 
 After do

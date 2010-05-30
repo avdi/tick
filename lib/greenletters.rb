@@ -26,6 +26,7 @@ require 'rbconfig'
 module Greenletters
   LogicError   = Class.new(::Exception)
   SystemError  = Class.new(RuntimeError)
+  TimeoutError = Class.new(SystemError)
   ClientError  = Class.new(RuntimeError)
   StateError   = Class.new(ClientError)
   Process
@@ -43,13 +44,15 @@ module Greenletters
     attr_accessor :time_to_live
     attr_accessor :exclusive
     attr_accessor :logger
+    attr_accessor :interruption
 
     alias_method :exclusive?, :exclusive
 
     def initialize(options={}, &block)
-      @block     = block || lambda{}
-      @exclusive = options.fetch(:exclusive) { false }
-      @logger    = ::Logger.new($stdout)
+      @block        = block || lambda{}
+      @exclusive    = options.fetch(:exclusive) { false }
+      @logger       = ::Logger.new($stdout)
+      @interruption = :none
     end
 
     def call(process)
@@ -85,6 +88,11 @@ module Greenletters
     def to_s
       "timeout"
     end
+
+    def call(process)
+      @block.call(process, process.blocker)
+      true
+    end
   end
 
   class ExitTrigger < Trigger
@@ -109,6 +117,17 @@ module Greenletters
     end
   end
 
+  class UnsatisfiedTrigger < Trigger
+    def to_s
+      "unsatisfied wait"
+    end
+
+    def call(process)
+      @block.call(process, process.interruption)
+      true
+    end
+  end
+
   class Process
     END_MARKER = '__GREENLETTERS_PROCESS_ENDED__'
 
@@ -125,15 +144,16 @@ module Greenletters
     extend Forwardable
     include ::Greenletters
 
-    attr_reader   :command
-    attr_accessor :blocker
-    attr_reader   :input_buffer
-    attr_reader   :output_buffer
-    attr_reader   :status
+    attr_reader   :command      # Command to run in a subshell
+    attr_accessor :blocker      # The Trigger currently being waited for, if any
+    attr_reader   :input_buffer # Input waiting to be written to process
+    attr_reader   :output_buffer # Output ready to be read from process
+    attr_reader   :status        # :not_started -> :running -> :ended -> :exited
 
     def_delegators :input_buffer, :puts, :write, :print, :printf, :<<
     def_delegators :output_buffer, :read, :readpartial, :read_nonblock, :gets,
                                    :getline
+    def_delegators  :blocker, :interruption, :interruption=
 
     def initialize(*args)
       options        = args.pop if args.last.is_a?(Hash)
@@ -142,6 +162,7 @@ module Greenletters
       @blocker       = nil
       @input_buffer  = StringIO.new
       @output_buffer = StringIO.new
+      @env           = options.fetch(:env) {{}}
       @logger   = options.fetch(:logger) {
         l = ::Logger.new($stdout)
         l.level = ::Logger::WARN
@@ -149,6 +170,13 @@ module Greenletters
       }
       @state         = :not_started
       @shell         = options.fetch(:shell) { '/bin/sh' }
+      @transcript    = options.fetch(:transcript) {
+        t = Object.new
+        def t.<<(*)
+          # NOOP
+        end
+        t
+      }
     end
 
     def on(event, *args, &block)
@@ -198,7 +226,10 @@ module Greenletters
       handle_child_exit do
         cmd = wrapped_command
         @logger.debug "executing #{cmd.join(' ')}"
-        @output, @input, @pid = PTY.spawn(*cmd)
+        merge_environment(@env) do
+          @logger.debug "command environment:\n#{ENV.inspect}"
+          @output, @input, @pid = PTY.spawn(*cmd)
+        end
         @state = :running
         @logger.debug "spawned pid #{@pid}"
       end
@@ -243,9 +274,8 @@ module Greenletters
     attr_reader :triggers
 
     def wrapped_command
-      command_parts = command.map{|a| "'#{a}'"}.join(', ')
       [RUBY,
-        '-e', "system(#{command_parts})",
+        '-e', "system(*#{command.inspect})",
         '-e', "puts(#{END_MARKER.inspect})",
         '-e', "gets",
         '-e', "exit $?.exitstatus"
@@ -285,6 +315,7 @@ module Greenletters
     def process_output(handle)
       @logger.debug "output ready #{handle.inspect}"
       result = handle.readpartial(1024,output_buffer.string)
+      @transcript << result
       @logger.debug "read #{result.size} bytes"
       handle_triggers(:output)
       flush_triggers!(OutputTrigger) if ended?
@@ -320,8 +351,9 @@ module Greenletters
     def process_timeout
       @logger.debug "timeout"
       unless handle_triggers(:timeout)
-        raise SystemError, "Timed out waiting on #{blocker}"
+        raise TimeoutError, "Timed out waiting on #{blocker}"
       end
+      process_interruption(:timeout)
     end
 
     def handle_exit(status=status_from_waitpid)
@@ -331,11 +363,12 @@ module Greenletters
       @status = status
       unless handle_triggers(:exit)
         if status == 0
-          raise SystemError, "Process exited waiting on #{blocker}"
+          raise SystemError, "Process exited waiting on #{blocker}. Output: \n\n#{output_buffer.string}"
         else
           raise SystemError, "Process exited abnormally waiting on #{blocker}. Output: \n\n#{output_buffer.string}"
         end
       end
+      process_interruption(:exit)
     end
 
     def status_from_waitpid
@@ -383,6 +416,7 @@ module Greenletters
 
     def unblock!
       @logger.debug "unblocked"
+      triggers.delete(@blocker)
       @blocker = nil
     end
 
@@ -406,6 +440,26 @@ module Greenletters
     def flush_triggers!(kind)
       @logger.debug "flushing triggers matching #{kind}"
       triggers.delete_if{|t| kind === t}
+    end
+
+    def merge_environment(new_env)
+      old_env = new_env.inject({}) do |old, (key, value)|
+        old[key] = ENV[key]
+        ENV[key] = value
+        old
+      end
+      yield
+    ensure
+      old_env.each_pair do |key, value|
+        if value.nil? then ENV.delete(key) else ENV[key] = value end
+      end
+    end
+
+    def process_interruption(reason)
+      if blocked?
+        self.interruption = reason
+        unblock!
+      end
     end
   end
 end
