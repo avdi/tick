@@ -151,6 +151,8 @@ module Tick
 end
 
 Main do
+  description "A tool for managing project tickets"
+
   fattr(:ui) {
     hl = HighLine.new
     hl
@@ -196,18 +198,21 @@ Main do
   end
 
   option 'debug', 'd' do
+    description "Show debug output"
     cast :boolean
     default false
     attr
   end
 
   option 'verbose', 'v' do
+    description "Show verbose output"
     cast :boolean
     default false
     attr
   end
 
   environment('TICK_TRACKER_BASE_URI') {
+    description "Base URI for Pivotal Tracker API"
     default 'https://www.pivotaltracker.com'
     cast lambda {|uri| Addressable::URI.parse(uri)}
     attr
@@ -225,7 +230,10 @@ Main do
   end
 
   mode 'project' do
+    description "List and choose ticketing system projects"
+
     mode 'list' do
+      description "List projects you are a member of"
       def run
         store.transaction do
           projects.each do |p|
@@ -236,6 +244,7 @@ Main do
     end
 
     mode 'select' do
+      description "Choose a project to associate with the local project"
       def run
         store.transaction do
           ui.choose do |menu|
@@ -252,12 +261,14 @@ Main do
   end
 
   mode 'info' do
+    description "Show information about the project"
     def run
       show_info
     end
   end
 
   mode 'login' do
+    description "Login to the ticketing system"
     def run
       show_info
     end
