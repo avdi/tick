@@ -168,10 +168,15 @@ When /^I run "([^\"]*)"$/ do |command|
     :transcript => @transcript,
     :cwd        => @construct.to_s)
   @process.on(:unsatisfied) do |process, reason, blocker|
+    configuration = if (@construct + '.tick').exist?
+                      (@construct + '.tick').read
+                    else
+                      "<No configuration>"
+                    end
     raise "#{reason} while waiting for #{blocker}\nCommand logged to #{log_path}" \
           "\nTranscript:\n\n#{@transcript}\n\n" \
           "Server output:\n\n#{@tracker.output}\n\n" \
-          "Configuration:\n\n#{(@construct + '.tick').read}\n\n" \
+          "Configuration:\n\n#{configuration}\n\n" \
           "---------------------------------------------------------------------"
   end
   @process.start!

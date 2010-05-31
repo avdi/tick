@@ -12,20 +12,30 @@ require 'addressable/uri'
 require 'forwardable'
 
 module Tick
+  Fattr(:logger) { ::Logger.new($stderr) }
+
+  module Common
+    def logger
+      Tick.logger
+    end
+  end
+
   class Project
+    include Common
     extend Forwardable
     def_delegator :ticketing_project, :name
 
-    fattr :ticketing_system
+    fattr :ticketing_account
     fattr :ticketing_project
 
     def initialize
-      self.ticketing_system  = nil
+      self.ticketing_account  = nil
       self.ticketing_project = NullProject.new
     end
   end
 
   class NullProject
+    include Common
     fattr :name => 'not set'
   end
 
@@ -45,9 +55,7 @@ module Tick
       xml.xpath(path).text
     end
 
-    def representation
-      response.body
-    end
+    fattr(:representation) { response.body }
 
     def etag
       response['etag']
@@ -67,6 +75,7 @@ module Tick
   end
 
   class Tracker
+    include Common
     fattr :token
     fattr :base_uri
 
@@ -81,8 +90,9 @@ module Tick
       client
     }
 
-    def initialize(base_uri)
+    def initialize(base_uri, login, password)
       @base_uri = Addressable::URI.parse(base_uri)
+      @token    = retrieve_token(login, password)
     end
 
     def projects
@@ -90,21 +100,48 @@ module Tick
         xpath('//project').map do |proj_xml|
 
         id = proj_xml.xpath('id').text
-        Tick::TrackerProject.new(
+        proj = Tick::TrackerProject.new(
           "#{base_uri}/services/v3/projects/#{id}",
           self)
+        proj.representation = proj_xml.to_s
+        proj
       end
     end
 
     def fetch(url)
+      logger.debug "GET #{url}"
       url = Addressable::URI.parse(url)
       request = Net::HTTP::Get.new(url.path)
       request['X-TrackerToken'] = token
       response = client.request(request)
     end
-end
+
+    private
+
+    def retrieve_token(login, password)
+      logger.debug "Retrieving token for login #{login}"
+      client.start do |client|
+        request = Net::HTTP::Get.new('/services/v3/tokens/active')
+        request.basic_auth login, password
+        response = client.request(request)
+        case response
+        when Net::HTTPSuccess
+          token = extract_token(response.body)
+          token
+        else
+          raise "Unable to retrieve API token: #{response.body}"
+        end
+      end
+    end
+
+    def extract_token(data)
+      doc = Nokogiri::XML(data)
+      doc.at_xpath('//guid').content
+    end
+  end
 
   class TrackerProject
+    include Common
     include TrackerResource
 
     def name
@@ -114,7 +151,6 @@ end
 end
 
 Main do
-
   fattr(:ui) {
     hl = HighLine.new
     hl
@@ -122,18 +158,14 @@ Main do
   fattr(:project_root) { Pathname(Dir.pwd) }
   fattr(:project_config_path) { project_root + '.tick' }
   fattr(:store) {
-    store = YAML::Store.new(project_config_path.to_s)
-    store.transaction(false) do |store|
-      store['tracker'] ||= {}
-    end
-    store
+    YAML::Store.new(project_config_path.to_s)
   }
   fattr(:login) { ui.ask("Tracker login: "){|q| q.default = guess_login } }
   fattr(:password) {
     ui.ask("Tracker password: ") {|q| q.echo = "*"}
   }
   fattr(:token) {
-    store['tracker']['token'] or retrieve_token
+    project.ticketing_account.token
   }
   fattr(:tracker_base_uri) {
     params['TICK_TRACKER_BASE_URI'].value
@@ -150,16 +182,10 @@ Main do
     client
   }
   fattr(:projects) {
-    request = Net::HTTP::Get.new('/services/v3/projects')
-    request['X-TrackerToken'] = token
-    response = client.request(request)
-    logger.debug "Projects XML:"
-    logger.debug response.body
-    doc = Nokogiri::XML(response.body)
-    doc.xpath('//project')
+    project.ticketing_account.projects
   }
   fattr(:project_name) {
-    store['project_name']
+    project.name
   }
   fattr(:project) {
     store['project'] ||= initialize_project
@@ -195,6 +221,7 @@ Main do
     else
       logger.level = ::Logger::WARN
     end
+    Tick.logger = self.logger
   end
 
   mode 'project' do
@@ -202,7 +229,7 @@ Main do
       def run
         store.transaction do
           projects.each do |p|
-            puts p.xpath('name').text
+            say p.name
           end
         end
       end
@@ -213,7 +240,7 @@ Main do
         store.transaction do
           ui.choose do |menu|
             menu.prompt = "Select a project: "
-            project.ticketing_system.projects.each do |ticketing_project|
+            projects.each do |ticketing_project|
               menu.choice(ticketing_project.name) do
                 project.ticketing_project = ticketing_project
               end
@@ -247,32 +274,6 @@ Main do
     git_repo.config('user.email')
   end
 
-  def retrieve_token
-    client.start do |client|
-      request = Net::HTTP::Get.new('/services/v3/tokens/active')
-      request.basic_auth login, password
-      response = client.request(request)
-      case response
-      when Net::HTTPSuccess
-        token = extract_token(response.body)
-        store_token!(token)
-        token
-      else
-        raise "Unable to retrieve API token: #{response.body}"
-      end
-    end
-  end
-
-  def extract_token(data)
-    doc = Nokogiri::XML(data)
-    doc.at_xpath('//guid').content
-  end
-
-  def store_token!(token)
-    store['tracker']['token'] = token
-    say "Token stored"
-  end
-
   def show_info
     store.transaction do
       say "Project: #{project.name || '<not set>'}"
@@ -281,10 +282,10 @@ Main do
   end
 
   def initialize_project
+    logger.debug "Initializing project"
     project = Tick::Project.new
-    ticketing_system = Tick::Tracker.new(tracker_base_uri)
-    ticketing_system.token = token
-    project.ticketing_system = ticketing_system
+    ticketing_account = Tick::Tracker.new(tracker_base_uri, login, password)
+    project.ticketing_account = ticketing_account
     project
   end
 end

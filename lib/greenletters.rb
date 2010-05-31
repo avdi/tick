@@ -157,14 +157,14 @@ module Greenletters
     def_delegators  :blocker, :interruption, :interruption=
 
     def initialize(*args)
-      options        = args.pop if args.last.is_a?(Hash)
-      @command       = args
-      @triggers      = []
-      @blocker       = nil
-      @input_buffer  = StringIO.new
-      @output_buffer = StringIO.new
-      @env           = options.fetch(:env) {{}}
-      @cwd           = options.fetch(:cwd) {Dir.pwd}
+      options         = args.pop if args.last.is_a?(Hash)
+      @command        = args
+      @triggers       = []
+      @blocker        = nil
+      @input_buffer   = StringIO.new
+      @output_buffer  = StringIO.new
+      @env            = options.fetch(:env) {{}}
+      @cwd            = options.fetch(:cwd) {Dir.pwd}
       @logger   = options.fetch(:logger) {
         l = ::Logger.new($stdout)
         l.level = ::Logger::WARN
@@ -321,7 +321,7 @@ module Greenletters
       @logger.debug "output ready #{handle.inspect}"
       result = handle.readpartial(1024,output_buffer.string)
       @transcript << result
-      @logger.debug format_input_for_log(output_buffer.string)
+      @logger.debug format_input_for_log(result)
       @logger.debug "read #{result.size} bytes"
       handle_triggers(:output)
       flush_triggers!(OutputTrigger) if ended?
