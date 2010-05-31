@@ -9,6 +9,109 @@ require 'nokogiri'
 require 'yaml/store'
 require 'net/https'
 require 'addressable/uri'
+require 'forwardable'
+
+module Tick
+  class Project
+    extend Forwardable
+    def_delegator :ticketing_project, :name
+
+    fattr :ticketing_system
+    fattr :ticketing_project
+
+    def initialize
+      self.ticketing_system  = nil
+      self.ticketing_project = NullProject.new
+    end
+  end
+
+  class NullProject
+    fattr :name => 'not set'
+  end
+
+  module TrackerResource
+    attr_reader :url, :tracker
+
+    fattr('response') {
+      fetch(url)
+    }
+
+    def initialize(url, tracker)
+      @url     = Addressable::URI.parse(url)
+      @tracker = tracker
+    end
+
+    def [](path)
+      xml.xpath(path).text
+    end
+
+    def representation
+      response.body
+    end
+
+    def etag
+      response['etag']
+    end
+
+    def fetch(url)
+      tracker.fetch(url)
+    end
+
+    def token
+      tracker.token
+    end
+
+    def xml
+      Nokogiri::XML(representation)
+    end
+  end
+
+  class Tracker
+    fattr :token
+    fattr :base_uri
+
+    fattr('client') {
+      client = Net::HTTP.new(
+        base_uri.host,
+        base_uri.inferred_port)
+      client.use_ssl     = true if base_uri.scheme == 'https'
+      # client.certain        = OpenSSL::X509::Certificate.new(DATA)
+      # client.key         = OpenSSL::PKey::RSA.new(DATA)
+      client.verify_mode = OpenSSL::SSL::VERIFY_NONE # TODO fix this!
+      client
+    }
+
+    def initialize(base_uri)
+      @base_uri = Addressable::URI.parse(base_uri)
+    end
+
+    def projects
+      Nokogiri::XML(fetch("#{base_uri}/services/v3/projects").body).
+        xpath('//project').map do |proj_xml|
+
+        id = proj_xml.xpath('id').text
+        Tick::TrackerProject.new(
+          "#{base_uri}/services/v3/projects/#{id}",
+          self)
+      end
+    end
+
+    def fetch(url)
+      url = Addressable::URI.parse(url)
+      request = Net::HTTP::Get.new(url.path)
+      request['X-TrackerToken'] = token
+      response = client.request(request)
+    end
+end
+
+  class TrackerProject
+    include TrackerResource
+
+    def name
+      self['project/name']
+    end
+  end
+end
 
 Main do
 
@@ -57,6 +160,9 @@ Main do
   }
   fattr(:project_name) {
     store['project_name']
+  }
+  fattr(:project) {
+    store['project'] ||= initialize_project
   }
 
   option 'config_path' do
@@ -107,10 +213,9 @@ Main do
         store.transaction do
           ui.choose do |menu|
             menu.prompt = "Select a project: "
-            projects.each do |project|
-              menu.choice(project.xpath('name').text) do
-                store['project_id'] = project.xpath('id').text
-                store['project_name'] = project.xpath('name').text
+            project.ticketing_system.projects.each do |ticketing_project|
+              menu.choice(ticketing_project.name) do
+                project.ticketing_project = ticketing_project
               end
             end
           end
@@ -170,8 +275,16 @@ Main do
 
   def show_info
     store.transaction do
-      say "Project: #{project_name || '<not set>'}"
+      say "Project: #{project.name || '<not set>'}"
       say "Tracker token:  #{token}"
     end
+  end
+
+  def initialize_project
+    project = Tick::Project.new
+    ticketing_system = Tick::Tracker.new(tracker_base_uri)
+    ticketing_system.token = token
+    project.ticketing_system = ticketing_system
+    project
   end
 end
