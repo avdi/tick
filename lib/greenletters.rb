@@ -4,6 +4,7 @@ require 'forwardable'
 require 'stringio'
 require 'shellwords'
 require 'rbconfig'
+require 'strscan'
 
 # A better expect.rb
 #
