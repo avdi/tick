@@ -72,11 +72,11 @@ module Greenletters
     end
 
     def call(process)
-      data = process.output_buffer.string
-      @logger.debug "matching #{@pattern.inspect} against #{data.inspect}"
-      if (md = data.match(@pattern))
+      scanner = process.output_buffer
+      @logger.debug "matching #{@pattern.inspect} against #{scanner.rest.inspect}"
+      if scanner.scan_until(@pattern)
         @logger.debug "matched #{@pattern.inspect}"
-        @block.call(process, md)
+        @block.call(process, scanner)
         true
       else
         false
@@ -162,7 +162,7 @@ module Greenletters
       @triggers       = []
       @blocker        = nil
       @input_buffer   = StringIO.new
-      @output_buffer  = StringIO.new
+      @output_buffer  = StringScanner.new("")
       @env            = options.fetch(:env) {{}}
       @cwd            = options.fetch(:cwd) {Dir.pwd}
       @logger   = options.fetch(:logger) {
@@ -240,8 +240,7 @@ module Greenletters
 
     def flush_output_buffer!
       @logger.debug "flushing output buffer"
-      @output_buffer.string = ""
-      @output_buffer.rewind
+      @output_buffer.terminate
     end
 
     def alive?
@@ -319,13 +318,14 @@ module Greenletters
 
     def process_output(handle)
       @logger.debug "output ready #{handle.inspect}"
-      result = handle.readpartial(1024,output_buffer.string)
-      @transcript << result
-      @logger.debug format_input_for_log(result)
-      @logger.debug "read #{result.size} bytes"
+      data = handle.readpartial(1024)
+      output_buffer << data
+      @transcript << data
+      @logger.debug format_input_for_log(data)
+      @logger.debug "read #{data.size} bytes"
       handle_triggers(:output)
       flush_triggers!(OutputTrigger) if ended?
-      flush_output_buffer! unless ended?
+      # flush_output_buffer! unless ended?
     end
 
     def collect_remaining_output
@@ -334,7 +334,8 @@ module Greenletters
         return
       end
       @logger.debug "collecting remaining output"
-      while data = @output.read_nonblock(1024, output_buffer.string)
+      while data = @output.read_nonblock(1024)
+        output_buffer << data
         @logger.debug "read #{data.size} bytes"
       end
     rescue EOFError, Errno::EIO => error
@@ -410,6 +411,7 @@ module Greenletters
       return false if ended?
       @logger.debug "end marker found"
       output_buffer.string.gsub!(/#{END_MARKER}\s*/, '')
+      output_buffer.unscan
       @state = :ended
       @logger.debug "end marker expunged from output buffer"
       @logger.debug "acknowledging end marker"
