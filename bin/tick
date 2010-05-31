@@ -30,14 +30,7 @@ Main do
     ui.ask("Tracker password: ") {|q| q.echo = "*"}
   }
   fattr(:token) {
-    catch(:token) do
-      store.transaction(true) do |s|
-        if t = s['tracker']['token']
-          throw :token, t
-        end
-      end
-      retrieve_token
-    end
+    store['tracker']['token'] or retrieve_token
   }
   fattr(:tracker_base_uri) {
     params['TICK_TRACKER_BASE_URI'].value
@@ -61,6 +54,9 @@ Main do
     logger.debug response.body
     doc = Nokogiri::XML(response.body)
     doc.xpath('//project')
+  }
+  fattr(:project_name) {
+    store['project_name']
   }
 
   option 'config_path' do
@@ -98,8 +94,26 @@ Main do
   mode 'project' do
     mode 'list' do
       def run
-        projects.each do |p|
-          puts p.xpath('name').text
+        store.transaction do
+          projects.each do |p|
+            puts p.xpath('name').text
+          end
+        end
+      end
+    end
+
+    mode 'select' do
+      def run
+        store.transaction do
+          ui.choose do |menu|
+            menu.prompt = "Select a project: "
+            projects.each do |project|
+              menu.choice(project.xpath('name').text) do
+                store['project_id'] = project.xpath('id').text
+                store['project_name'] = project.xpath('name').text
+              end
+            end
+          end
         end
       end
     end
@@ -150,13 +164,14 @@ Main do
   end
 
   def store_token!(token)
-    store.transaction(false) do |store|
-      store['tracker']['token'] = token
-      say "Token stored"
-    end
+    store['tracker']['token'] = token
+    say "Token stored"
   end
 
   def show_info
-    say "Token:  #{token}"
+    store.transaction do
+      say "Project: #{project_name || '<not set>'}"
+      say "Tracker token:  #{token}"
+    end
   end
 end

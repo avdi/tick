@@ -151,22 +151,25 @@ Given /^the Tracker server is available$/ do
 end
 
 When /^I run "([^\"]*)"$/ do |command|
+  if @process
+    @process.wait_for(:exit)
+  end
   command = command.sub(/^tick/, File.join(@bin_dir, 'tick'))
   command << " -d"
   log_path     = (@tmpdir + 'commands.log').to_s
   logger       = ::Logger.new(log_path)
   logger.level = ::Logger::DEBUG
   logger << "\n\n*** Running command `#{command}`\n"
-  transcript   = ""
+  @transcript   = ""
   @process = Greenletters::Process.new(command,
     :logger => logger,
     :env    => {'TICK_TRACKER_BASE_URI' =>
       "http://#{@tracker.host}:#{@tracker.port}"},
-    :transcript => transcript,
+    :transcript => @transcript,
     :cwd        => @construct.to_s)
   @process.on(:unsatisfied) do |process, reason, blocker|
     raise "#{reason} while waiting for #{blocker}\nCommand logged to #{log_path}" \
-          "\nTranscript:\n\n#{transcript}\n\n" \
+          "\nTranscript:\n\n#{@transcript}\n\n" \
           "Server output:\n\n#{@tracker.output}\n\n" \
           "Configuration:\n\n#{(@construct + '.tick').read}\n\n" \
           "---------------------------------------------------------------------"
@@ -176,6 +179,12 @@ end
 
 Then /^I should see "([^\"]*)"$/ do |pattern|
   @process.wait_for(:output, Regexp.new(pattern, Regexp::IGNORECASE))
+end
+
+Then /^I should not see "([^\"]*)"$/ do |pattern|
+  @process.on(:output, Regexp.new(pattern, Regexp::IGNORECASE)) do
+    raise "Expected not to see #{pattern}, but saw it in:\n\n#{@transcript}"
+  end
 end
 
 When /^I enter "([^\"]*)"$/ do |response|
