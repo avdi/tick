@@ -61,6 +61,37 @@ EOF
     </projects>
 EOF
   end
+
+  def tracker_ticket_list_xml(tickets)
+    tickets_xml = tickets.map{|ticket|
+      tracker_ticket_xml(ticket)
+    }.join("\n")
+    <<"EOF"
+  <stories type="array" count="#{tickets.size}" total="#{tickets.size}">
+    #{tickets_xml}
+  </stories>
+EOF
+  end
+
+  def tracker_ticket_xml(ticket)
+<<"EOF"
+    <story>
+      <id type="integer">#{ticket[:id]}</id>
+      <project_id type="integer">PROJECT_ID</project_id>
+      <story_type>feature</story_type>
+      <url>http://www.pivotaltracker.com/story/show/#{ticket[:id]}</url>
+      <estimate type="integer">1</estimate>
+      <current_state>accepted</current_state>
+      <description></description>
+      <name>#{ticket[:title]}</name>
+      <requested_by>James Kirk</requested_by>
+      <owned_by>#{ticket[:owner]}</owned_by>
+      <created_at type="datetime">2008/12/10 00:00:00 UTC</created_at>
+      <accepted_at type="datetime">2008/12/10 00:00:00 UTC</accepted_at>
+      <labels>label 1,label 2,label 3</labels>
+    </story>
+EOF
+  end
 end
 
 World(ProjectHelpers)
@@ -136,7 +167,9 @@ Given /^I am a member of the following projects$/ do |projects|
   projects.hashes.each do |project|
     project_names << project[:title]
   end
+end
 
+Given /^the Tracker server is available$/ do
   list_xml = tracker_project_list_xml
   @tracker.define do
     get '/services/v3/projects' do
@@ -144,10 +177,41 @@ Given /^I am a member of the following projects$/ do |projects|
       list_xml
     end
   end
+  @tracker.start
 end
 
-Given /^the Tracker server is available$/ do
-  @tracker.start
+Given /^my tracker login is "([^\"]*)"$/ do |login|
+  @login = login
+end
+
+Given /^project "([^\"]*)" with current tickets:$/ do |name, tickets|
+  project_names << name
+
+  ticket_list_xml = tracker_ticket_list_xml(tickets.hashes)
+  project_index   = project_names.index(name)
+  @tracker.define do
+    get "/services/v3/projects/#{project_index}/iterations/current" do
+      content_type 'application/xml'
+
+      <<"EOF"
+<?xml version="1.0" encoding="UTF-8"?>
+<iterations type="array">
+  <iteration>
+    <id type="integer">21</id>
+    <number type="integer">21</number>
+    <start type="datetime">2010/06/01 08:00:00 UTC</start>
+    <finish type="datetime">2010/06/08 08:00:00 UTC</finish>
+    #{ticket_list_xml}
+  </iteration>
+</iterations>
+EOF
+    end
+  end
+
+end
+
+Given /^I have chosen project "([^\"]*)"$/ do |project_name|
+  When "I run \"tick select-project '#{project_name}'\""
 end
 
 When /^I run "([^\"]*)"$/ do |command|

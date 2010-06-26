@@ -147,6 +147,39 @@ module Tick
     def name
       self['project/name']
     end
+
+    def tickets
+      doc = Nokogiri::XML(fetch(url + (url.path + "/iterations/current")).body)
+      stories = doc.xpath('//story').map do |story_xml|
+        id = story_xml.xpath('id')
+        story = TrackerStory.new(url + (url.path + "/stories/#{id}"),tracker)
+        story.representation = story_xml.to_s
+        story
+      end
+      stories.select{|s| s.owned_by == user_full_name}
+    end
+
+    def user_full_name
+
+    end
+
+end
+
+  class TrackerStory
+    include Common
+    include TrackerResource
+
+    def name
+      self['story/name']
+    end
+
+    def id
+      self['story/id']
+    end
+
+    def owned_by
+      self['story/owned_by']
+    end
   end
 end
 
@@ -229,32 +262,13 @@ Main do
     Tick.logger = self.logger
   end
 
-  mode 'project' do
-    description "List and choose ticketing system projects"
 
-    mode 'list' do
-      description "List projects you are a member of"
-      def run
-        store.transaction do
-          projects.each do |p|
-            say p.name
-          end
-        end
-      end
-    end
-
-    mode 'select' do
-      description "Choose a project to associate with the local project"
-      def run
-        store.transaction do
-          ui.choose do |menu|
-            menu.prompt = "Select a project: "
-            projects.each do |ticketing_project|
-              menu.choice(ticketing_project.name) do
-                project.ticketing_project = ticketing_project
-              end
-            end
-          end
+  mode 'list' do
+    description "List tickets"
+    def run
+      store.transaction do
+        project.ticketing_project.tickets.each do |ticket|
+          say "#{ticket.id} - #{ticket.name}"
         end
       end
     end
@@ -271,6 +285,52 @@ Main do
     description "Login to the ticketing system"
     def run
       show_info
+    end
+  end
+
+  mode 'list-projects' do
+    description "List projects you are a member of"
+    def run
+      store.transaction do
+        projects.each do |p|
+          say p.name
+        end
+      end
+    end
+  end
+
+  mode 'select-project' do
+    description "Choose a project to associate with the local project"
+
+    argument 'project_name' do
+      optional
+      description "Name of the project"
+    end
+
+    def run
+      store.transaction do
+        if params['project_name'].given?
+          name              = params['project_name'].value
+          ticketing_project = projects.detect {|p|
+            p.name == name
+          }
+          if ticketing_project
+            project.ticketing_project = ticketing_project
+          else
+            error "Project not found"
+            exit_failure!
+          end
+        else
+          ui.choose do |menu|
+            menu.prompt = "Select a project: "
+            projects.each do |ticketing_project|
+              menu.choice(ticketing_project.name) do
+                project.ticketing_project = ticketing_project
+              end
+            end
+          end
+        end
+      end
     end
   end
 
